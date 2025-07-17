@@ -29,6 +29,7 @@ public class WebViewParser {
     private static final int MAX_JS_RETRY = 3;
     private int jsRetryCount = 0;
     private final String originalUrl;
+    private WebView webView; // Add reference to properly clean up
 
     // 平台视频URL正则匹配器
     private static final Pattern DOUYIN_PATTERN = Pattern.compile("https://v[\\d]+-web\\.douyinvod\\.com/.*");
@@ -41,38 +42,74 @@ public class WebViewParser {
     }
 
     public String parseVideoUrl() throws Exception {
-        mainHandler.post(() -> {
-            WebView webView = new WebView(context);
-            webView.getSettings().setJavaScriptEnabled(true);
-            webView.getSettings().setMediaPlaybackRequiresUserGesture(false);
-            webView.getSettings().setDomStorageEnabled(true);
-            webView.getSettings().setDatabaseEnabled(true);
-            webView.getSettings().setUserAgentString("Mozilla/5.0 (Linux; Android 10; Pixel 4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Mobile Safari/537.36");
+        try {
+            mainHandler.post(() -> {
+                try {
+                    webView = new WebView(context);
+                    webView.getSettings().setJavaScriptEnabled(true);
+                    webView.getSettings().setMediaPlaybackRequiresUserGesture(false);
+                    webView.getSettings().setDomStorageEnabled(true);
+                    webView.getSettings().setDatabaseEnabled(true);
+                    webView.getSettings().setUserAgentString("Mozilla/5.0 (Linux; Android 10; Pixel 4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Mobile Safari/537.36");
 
-            // 添加JavaScript接口
-            webView.addJavascriptInterface(new JSInterface(), "AndroidParser");
+                    // 添加JavaScript接口
+                    webView.addJavascriptInterface(new JSInterface(), "AndroidParser");
 
-            // 设置自定义WebViewClient
-            webView.setWebViewClient(new VideoWebViewClient());
+                    // 设置自定义WebViewClient
+                    webView.setWebViewClient(new VideoWebViewClient());
 
-            // 加载URL
-            webView.loadUrl(originalUrl);
-        });
+                    // 加载URL
+                    if (originalUrl != null && !originalUrl.trim().isEmpty()) {
+                        webView.loadUrl(originalUrl);
+                    } else {
+                        Log.e(TAG, "Original URL is null or empty");
+                        latch.countDown();
+                    }
+                } catch (Exception e) {
+                    Log.e(TAG, "Error creating WebView", e);
+                    latch.countDown();
+                }
+            });
 
-        // 等待获取结果
-        if (latch.await(30, TimeUnit.SECONDS)) {
-            String finalUrl = videoUrlRef.get();
-            if (finalUrl != null && !finalUrl.isEmpty()) {
-                return finalUrl;
+            // 等待获取结果
+            if (latch.await(30, TimeUnit.SECONDS)) {
+                String finalUrl = videoUrlRef.get();
+                if (finalUrl != null && !finalUrl.isEmpty()) {
+                    return finalUrl;
+                }
             }
-        }
 
-        // 超时后尝试从候选URL中选择最佳
-        if (!candidateUrls.isEmpty()) {
-            return selectBestCandidate();
-        }
+            // 超时后尝试从候选URL中选择最佳
+            if (!candidateUrls.isEmpty()) {
+                return selectBestCandidate();
+            }
 
-        throw new Exception("解析超时，无法获取视频地址");
+            throw new Exception("解析超时，无法获取视频地址");
+        } finally {
+            // 确保WebView被清理
+            cleanupWebView();
+        }
+    }
+
+    private void cleanupWebView() {
+        mainHandler.post(() -> {
+            if (webView != null) {
+                try {
+                    webView.stopLoading();
+                    webView.clearHistory();
+                    webView.clearCache(true);
+                    webView.loadUrl("about:blank");
+                    webView.removeJavascriptInterface("AndroidParser");
+                    webView.setWebViewClient(null);
+                    webView.setWebChromeClient(null);
+                    webView.destroy();
+                    webView = null;
+                    Log.d(TAG, "WebView cleaned up successfully");
+                } catch (Exception e) {
+                    Log.e(TAG, "Error cleaning up WebView", e);
+                }
+            }
+        });
     }
 
     private String selectBestCandidate() {

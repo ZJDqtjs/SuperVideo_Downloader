@@ -174,19 +174,27 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onResume() {
         super.onResume();
-        // 注册广播接收器
-        LocalBroadcastManager.getInstance(this)
-                .registerReceiver(clipboardReceiver, new IntentFilter(CLIPBOARD_UPDATE_ACTION));
+        try {
+            // 注册广播接收器
+            LocalBroadcastManager.getInstance(this)
+                    .registerReceiver(clipboardReceiver, new IntentFilter(CLIPBOARD_UPDATE_ACTION));
 
-        // 检查剪贴板
-        pasteFromClipboard();
+            // 检查剪贴板
+            pasteFromClipboard();
+        } catch (Exception e) {
+            Log.e(TAG, "恢复活动时出错", e);
+        }
     }
 
     @Override
     protected void onPause() {
         super.onPause();
-        // 取消注册广播接收器
-        LocalBroadcastManager.getInstance(this).unregisterReceiver(clipboardReceiver);
+        try {
+            // 取消注册广播接收器
+            LocalBroadcastManager.getInstance(this).unregisterReceiver(clipboardReceiver);
+        } catch (Exception e) {
+            Log.e(TAG, "暂停活动时出错", e);
+        }
     }
 
     private void startClipboardMonitor() {
@@ -199,17 +207,25 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void processClipboardContent(String content) {
-        String extractedUrl = extractVideoUrl(content);
-        if (extractedUrl != null) {
-            // 避免重复设置相同的文本
-            if (!extractedUrl.equals(urlInput.getText().toString())) {
-                runOnUiThread(() -> {
-                    urlInput.setText(extractedUrl);
-                    urlInput.setSelection(extractedUrl.length());
-                    autoSelectPlatform(extractedUrl);
-                    Toast.makeText(this, "已从剪贴板获取链接", Toast.LENGTH_SHORT).show();
-                });
+        try {
+            String extractedUrl = extractVideoUrl(content);
+            if (extractedUrl != null) {
+                // 避免重复设置相同的文本
+                if (!extractedUrl.equals(urlInput.getText().toString())) {
+                    runOnUiThread(() -> {
+                        try {
+                            urlInput.setText(extractedUrl);
+                            urlInput.setSelection(extractedUrl.length());
+                            autoSelectPlatform(extractedUrl);
+                            Toast.makeText(this, "已从剪贴板获取链接", Toast.LENGTH_SHORT).show();
+                        } catch (Exception e) {
+                            Log.e(TAG, "更新UI时出错", e);
+                        }
+                    });
+                }
             }
+        } catch (Exception e) {
+            Log.e(TAG, "处理剪贴板内容时出错", e);
         }
     }
 
@@ -228,17 +244,25 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void pasteFromClipboard() {
-        if (clipboardManager == null) return;
+        try {
+            if (clipboardManager == null) {
+                Log.w(TAG, "剪贴板管理器为空");
+                return;
+            }
 
-        if (clipboardManager.hasPrimaryClip()) {
-            ClipData clipData = clipboardManager.getPrimaryClip();
-            if (clipData != null && clipData.getItemCount() > 0) {
-                ClipData.Item item = clipData.getItemAt(0);
-                if (item.getText() != null) {
-                    String pasteData = item.getText().toString();
-                    processClipboardContent(pasteData);
+            if (clipboardManager.hasPrimaryClip()) {
+                ClipData clipData = clipboardManager.getPrimaryClip();
+                if (clipData != null && clipData.getItemCount() > 0) {
+                    ClipData.Item item = clipData.getItemAt(0);
+                    if (item.getText() != null) {
+                        String pasteData = item.getText().toString();
+                        processClipboardContent(pasteData);
+                    }
                 }
             }
+        } catch (Exception e) {
+            Log.e(TAG, "粘贴剪贴板内容时出错", e);
+            Toast.makeText(this, "读取剪贴板失败", Toast.LENGTH_SHORT).show();
         }
     }
 
@@ -331,30 +355,41 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void loadDownloadHistory() {
-        historyFiles.clear();
-        File downloadDir = VideoDownloader.getDownloadDirectory();
-        if (downloadDir.exists() && downloadDir.isDirectory()) {
-            File[] files = downloadDir.listFiles();
-            if (files != null) {
-                for (File file : files) {
-                    if (file.isFile() && file.getName().endsWith(".mp4")) {
-                        historyFiles.add(file.getName());
+        try {
+            historyFiles.clear();
+            File downloadDir = VideoDownloader.getDownloadDirectory();
+            if (downloadDir.exists() && downloadDir.isDirectory()) {
+                File[] files = downloadDir.listFiles();
+                if (files != null) {
+                    for (File file : files) {
+                        if (file.isFile() && file.getName().endsWith(".mp4")) {
+                            historyFiles.add(file.getName());
+                        }
                     }
+                    // 按修改时间倒序排序
+                    Collections.sort(historyFiles, (f1, f2) -> {
+                        File file1 = new File(downloadDir, f1);
+                        File file2 = new File(downloadDir, f2);
+                        return Long.compare(file2.lastModified(), file1.lastModified());
+                    });
                 }
-                // 按修改时间倒序排序
-                Collections.sort(historyFiles, (f1, f2) -> {
-                    File file1 = new File(downloadDir, f1);
-                    File file2 = new File(downloadDir, f2);
-                    return Long.compare(file2.lastModified(), file1.lastModified());
-                });
             }
+            historyAdapter.notifyDataSetChanged();
+        } catch (Exception e) {
+            Log.e(TAG, "加载下载历史时出错", e);
+            Toast.makeText(this, "加载历史记录失败", Toast.LENGTH_SHORT).show();
+        } finally {
+            swipeRefresh.setRefreshing(false);
         }
-        historyAdapter.notifyDataSetChanged();
-        swipeRefresh.setRefreshing(false);
     }
 
     private void openVideo(File videoFile) {
         try {
+            if (!videoFile.exists()) {
+                Toast.makeText(this, "文件不存在", Toast.LENGTH_SHORT).show();
+                return;
+            }
+
             Uri contentUri = FileProvider.getUriForFile(this,
                     getPackageName() + ".provider",
                     videoFile);
@@ -362,8 +397,15 @@ public class MainActivity extends AppCompatActivity {
             Intent intent = new Intent(Intent.ACTION_VIEW);
             intent.setDataAndType(contentUri, "video/mp4");
             intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            startActivity(intent);
+            
+            // 检查是否有应用可以处理此Intent
+            if (intent.resolveActivity(getPackageManager()) != null) {
+                startActivity(intent);
+            } else {
+                Toast.makeText(this, "没有找到可以播放视频的应用", Toast.LENGTH_SHORT).show();
+            }
         } catch (Exception e) {
+            Log.e(TAG, "打开视频时出错", e);
             Toast.makeText(this, "无法播放视频: " + e.getMessage(), Toast.LENGTH_SHORT).show();
         }
     }
