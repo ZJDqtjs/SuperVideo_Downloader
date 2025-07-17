@@ -30,14 +30,28 @@ public class VideoParser {
     }
 
     public static String parseVideoUrl(Context context, String shareUrl, String platform) throws Exception {
+        if (shareUrl == null || shareUrl.trim().isEmpty()) {
+            throw new Exception("分享URL为空");
+        }
+        if (context == null) {
+            throw new Exception("Context为空");
+        }
+        
         Log.d(TAG, "开始解析" + platform + "视频URL: " + shareUrl);
+        
+        WebViewParser parser = null;
         try {
-            WebViewParser parser = new WebViewParser(context, shareUrl);
+            parser = new WebViewParser(context, shareUrl);
             String videoUrl = parser.parseVideoUrl();
+            
+            if (videoUrl == null || videoUrl.trim().isEmpty()) {
+                throw new Exception("解析结果为空");
+            }
+            
             Log.i(TAG, platform + "视频URL解析成功: " + videoUrl);
             return videoUrl;
         } catch (Exception e) {
-            Log.e(TAG, platform + "视频URL解析失败: " + e.getMessage());
+            Log.e(TAG, platform + "视频URL解析失败: " + e.getMessage(), e);
             throw new Exception(platform + "视频URL解析失败: " + e.getMessage(), e);
         }
     }

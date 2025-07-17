@@ -40,6 +40,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -267,25 +268,30 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private String extractVideoUrl(String text) {
-        if (text == null || text.isEmpty()) return null;
+        if (text == null || text.trim().isEmpty()) return null;
 
-        // 匹配多个视频平台的链接
-        String regex = "https?:\\/\\/(?:[\\w-]+\\.)?(?:douyin|iesdouyin|bilibili|kuaishou|gifshow|ixigua|toutiao)\\.\\S+";
-        Pattern pattern = Pattern.compile(regex);
-        Matcher matcher = pattern.matcher(text);
+        try {
+            // 匹配多个视频平台的链接
+            String regex = "https?:\\/\\/(?:[\\w-]+\\.)?(?:douyin|iesdouyin|bilibili|kuaishou|gifshow|ixigua|toutiao)\\.\\S+";
+            Pattern pattern = Pattern.compile(regex);
+            Matcher matcher = pattern.matcher(text);
 
-        if (matcher.find()) {
-            String foundUrl = matcher.group();
+            if (matcher.find()) {
+                String foundUrl = matcher.group();
+                if (foundUrl == null) return null;
 
-            // 清理URL参数
-            if (foundUrl.contains("?")) {
-                foundUrl = foundUrl.substring(0, foundUrl.indexOf("?"));
+                // 清理URL参数
+                if (foundUrl.contains("?")) {
+                    foundUrl = foundUrl.substring(0, foundUrl.indexOf("?"));
+                }
+
+                // 移除可能的结尾标点
+                foundUrl = foundUrl.replaceAll("[.,;!?]+$", "");
+
+                return foundUrl.trim();
             }
-
-            // 移除可能的结尾标点
-            foundUrl = foundUrl.replaceAll("[.,;!?]+$", "");
-
-            return foundUrl;
+        } catch (Exception e) {
+            Log.e(TAG, "提取视频URL时出错", e);
         }
         return null;
     }
@@ -447,8 +453,24 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        executor.shutdown();
-        // 停止剪贴板监听服务
-        stopService(new Intent(this, ClipboardMonitorService.class));
+        try {
+            if (executor != null && !executor.isShutdown()) {
+                executor.shutdown();
+                try {
+                    if (!executor.awaitTermination(5, TimeUnit.SECONDS)) {
+                        executor.shutdownNow();
+                    }
+                } catch (InterruptedException e) {
+                    executor.shutdownNow();
+                    Thread.currentThread().interrupt();
+                }
+            }
+            
+            // 停止剪贴板监听服务
+            Intent serviceIntent = new Intent(this, ClipboardMonitorService.class);
+            stopService(serviceIntent);
+        } catch (Exception e) {
+            Log.e(TAG, "销毁活动时出错", e);
+        }
     }
 }

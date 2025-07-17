@@ -312,24 +312,39 @@ public class WebViewParser {
         }
 
         private boolean isPotentialVideoUrl(String url) {
-            return url.contains(".mp4") ||
-                    url.contains(".m3u8") ||
-                    url.contains(".ts") ||
-                    url.contains("video") ||
-                    url.contains("stream") ||
-                    url.contains("play") ||
-                    url.contains("media") ||
-                    url.contains("aweme") ||
-                    url.contains("mime=video");
+            if (url == null || url.trim().isEmpty()) {
+                return false;
+            }
+            try {
+                return url.contains(".mp4") ||
+                        url.contains(".m3u8") ||
+                        url.contains(".ts") ||
+                        url.contains("video") ||
+                        url.contains("stream") ||
+                        url.contains("play") ||
+                        url.contains("media") ||
+                        url.contains("aweme") ||
+                        url.contains("mime=video");
+            } catch (Exception e) {
+                Log.e(TAG, "检查潜在视频URL时出错", e);
+                return false;
+            }
         }
 
         private boolean isValidVideoUrl(String url) {
-            return url != null &&
-                    url.startsWith("http") &&
-                    (url.contains(".mp4") ||
-                            url.contains(".m3u8") ||
-                            url.contains("video") ||
-                            url.contains("stream"));
+            if (url == null || url.trim().isEmpty()) {
+                return false;
+            }
+            try {
+                return url.startsWith("http") &&
+                        (url.contains(".mp4") ||
+                                url.contains(".m3u8") ||
+                                url.contains("video") ||
+                                url.contains("stream"));
+            } catch (Exception e) {
+                Log.e(TAG, "验证视频URL时出错", e);
+                return false;
+            }
         }
 
 
@@ -338,14 +353,20 @@ public class WebViewParser {
     private class JSInterface {
         @JavascriptInterface
         public void onVideoUrlFound(String url) {
-            Log.d(TAG, "JS接口获取到视频地址: " + url);
-            if (url != null && !url.isEmpty()) {
-                synchronized (videoUrlRef) {
-                    if (videoUrlRef.get() == null) {
-                        videoUrlRef.set(url);
-                        latch.countDown();
+            try {
+                Log.d(TAG, "JS接口获取到视频地址: " + url);
+                if (url != null && !url.trim().isEmpty() && url.startsWith("http")) {
+                    synchronized (videoUrlRef) {
+                        if (videoUrlRef.get() == null) {
+                            videoUrlRef.set(url.trim());
+                            latch.countDown();
+                        }
                     }
+                } else {
+                    Log.w(TAG, "JS接口获取到无效的URL: " + url);
                 }
+            } catch (Exception e) {
+                Log.e(TAG, "JS接口处理URL时出错", e);
             }
         }
     }
