@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string-array name="video_platforms">
+        <item>抖音</item>
+        <item>哔哩哔哩</item>
+        <item>快手</item>
+        <item>西瓜视频</item>
+        <item>其他平台</item>
+    </string-array>
+</resources>
