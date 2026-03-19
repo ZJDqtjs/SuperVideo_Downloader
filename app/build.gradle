@@ -3,11 +3,11 @@ plugins {
 }
 
 android {
-    namespace 'com.example.douyinvideo_downloader'
+    namespace 'com.zjdqtjs.supervideoDL'
     compileSdk 33
 
     defaultConfig {
-        applicationId "com.example.douyinvideo_downloader"
+        applicationId "com.zjdqtjs.supervideoDL"
         minSdk 28
         targetSdk 33
         versionCode 1
