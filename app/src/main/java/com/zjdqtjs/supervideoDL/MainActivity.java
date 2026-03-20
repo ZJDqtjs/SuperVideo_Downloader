@@ -5,16 +5,13 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import androidx.core.content.FileProvider;
-import androidx.localbroadcastmanager.content.LocalBroadcastManager;
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
 
 import android.Manifest;
-import android.content.BroadcastReceiver;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
-import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
@@ -47,11 +44,9 @@ public class MainActivity extends AppCompatActivity {
 
     private static final int REQUEST_PERMISSION_CODE = 100;
     private static final String TAG = "ClipboardMonitor";
-    private static final String CLIPBOARD_UPDATE_ACTION = "com.zjdqtjs.supervideoDL.CLIPBOARD_UPDATE";
-
-    private static final int REQUEST_CLIPBOARD_PERMISSION = 2001;
 
     private ClipboardManager clipboardManager;
+    private String lastClipboardUrl = "";
     private EditText urlInput;
     private TextView statusText;
     private Button pasteBtn;
@@ -67,34 +62,13 @@ public class MainActivity extends AppCompatActivity {
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
-    // 广播接收器，用于接收剪贴板更新
-    private final BroadcastReceiver clipboardReceiver = new BroadcastReceiver() {
-        @Override
-        public void onReceive(Context context, Intent intent) {
-            if (CLIPBOARD_UPDATE_ACTION.equals(intent.getAction())) {
-                String clipboardContent = intent.getStringExtra("clipboard_content");
-                if (clipboardContent != null) {
-                    processClipboardContent(clipboardContent);
-                }
-            }
-        }
-    };
+    private final ClipboardManager.OnPrimaryClipChangedListener clipboardChangedListener =
+            this::pasteFromClipboard;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
-
-        // Android 13+ 动态请求剪贴板权限
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (checkSelfPermission("android.permission.READ_CLIPBOARD_IN_BACKGROUND")
-                    != PackageManager.PERMISSION_GRANTED) {
-                requestPermissions(
-                        new String[]{"android.permission.READ_CLIPBOARD_IN_BACKGROUND"},
-                        REQUEST_CLIPBOARD_PERMISSION
-                );
-            }
-        }
 
         // 初始化UI组件
         urlInput = findViewById(R.id.urlInput);
@@ -180,16 +154,14 @@ public class MainActivity extends AppCompatActivity {
             requestPermissions();
         }
 
-        // 启动剪贴板监听服务
-        startClipboardMonitor();
     }
 
     @Override
     protected void onResume() {
         super.onResume();
-        // 注册广播接收器
-        LocalBroadcastManager.getInstance(this)
-                .registerReceiver(clipboardReceiver, new IntentFilter(CLIPBOARD_UPDATE_ACTION));
+        if (clipboardManager != null) {
+            clipboardManager.addPrimaryClipChangedListener(clipboardChangedListener);
+        }
 
         // 检查剪贴板
         pasteFromClipboard();
@@ -198,16 +170,8 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onPause() {
         super.onPause();
-        // 取消注册广播接收器
-        LocalBroadcastManager.getInstance(this).unregisterReceiver(clipboardReceiver);
-    }
-
-    private void startClipboardMonitor() {
-        Intent serviceIntent = new Intent(this, ClipboardMonitorService.class);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(serviceIntent);
-        } else {
-            startService(serviceIntent);
+        if (clipboardManager != null) {
+            clipboardManager.removePrimaryClipChangedListener(clipboardChangedListener);
         }
     }
 
@@ -215,7 +179,8 @@ public class MainActivity extends AppCompatActivity {
         String extractedUrl = extractVideoUrl(content);
         if (extractedUrl != null) {
             // 避免重复设置相同的文本
-            if (!extractedUrl.equals(urlInput.getText().toString())) {
+            if (!extractedUrl.equals(urlInput.getText().toString()) && !extractedUrl.equals(lastClipboardUrl)) {
+                lastClipboardUrl = extractedUrl;
                 runOnUiThread(() -> {
                     urlInput.setText(extractedUrl);
                     urlInput.setSelection(extractedUrl.length());
@@ -227,13 +192,34 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void autoSelectPlatform(String url) {
-        if (url.contains("douyin") || url.contains("iesdouyin")) {
+        if (url == null || url.isEmpty()) {
+            platformSpinner.setSelection(4);
+            return;
+        }
+
+        String lowerUrl = url.toLowerCase();
+        String host = "";
+        try {
+            Uri uri = Uri.parse(url);
+            if (uri.getHost() != null) {
+                host = uri.getHost().toLowerCase();
+            }
+        } catch (Exception ignored) {
+        }
+
+        if (lowerUrl.contains("douyin") || lowerUrl.contains("iesdouyin") ||
+                host.contains("douyin.com")) {
             platformSpinner.setSelection(0); // 抖音
-        } else if (url.contains("bilibili")) {
+        } else if (lowerUrl.contains("bilibili") || host.contains("b23.tv") ||
+                host.contains("bili22.cn") || host.contains("bili23.cn") ||
+                host.contains("bili33.cn") || host.contains("bili2233.cn") ||
+                host.contains("bilivideo.com")) {
             platformSpinner.setSelection(1); // B站
-        } else if (url.contains("kuaishou") || url.contains("gifshow")) {
+        } else if (lowerUrl.contains("kuaishou") || lowerUrl.contains("gifshow") ||
+                host.contains("kuaishou.com")) {
             platformSpinner.setSelection(2); // 快手
-        } else if (url.contains("ixigua") || url.contains("toutiao")) {
+        } else if (lowerUrl.contains("ixigua") || lowerUrl.contains("toutiao") ||
+                host.contains("ixigua.com")) {
             platformSpinner.setSelection(3); // 西瓜视频
         } else {
             platformSpinner.setSelection(4); // 其他平台
@@ -258,21 +244,16 @@ public class MainActivity extends AppCompatActivity {
     private String extractVideoUrl(String text) {
         if (text == null || text.isEmpty()) return null;
 
-        // 匹配多个视频平台的链接
-        String regex = "https?:\\/\\/(?:[\\w-]+\\.)?(?:douyin|iesdouyin|bilibili|kuaishou|gifshow|ixigua|toutiao)\\.\\S+";
+        // 匹配任意HTTP(S)链接，兼容分享中转域名
+        String regex = "https?:\\/\\/[^\\s]+";
         Pattern pattern = Pattern.compile(regex);
         Matcher matcher = pattern.matcher(text);
 
         if (matcher.find()) {
             String foundUrl = matcher.group();
 
-            // 清理URL参数
-            if (foundUrl.contains("?")) {
-                foundUrl = foundUrl.substring(0, foundUrl.indexOf("?"));
-            }
-
             // 移除可能的结尾标点
-            foundUrl = foundUrl.replaceAll("[.,;!?]+$", "");
+            foundUrl = foundUrl.replaceAll("[\\),.;!?]+$", "");
 
             return foundUrl;
         }
@@ -296,21 +277,11 @@ public class MainActivity extends AppCompatActivity {
 
         executor.execute(() -> {
             try {
-                // 使用通用解析器解析真实视频地址
-                String videoUrl = VideoParser.parseVideoUrl(MainActivity.this, extractedUrl, selectedPlatform);
-
-                if (videoUrl == null || videoUrl.isEmpty()) {
-                    throw new Exception("无法解析视频地址");
-                }
-
-                Log.d(TAG, "获取到视频地址: " + videoUrl);
-
                 mainHandler.post(() -> {
-                    statusText.setText("正在下载视频...");
+                    statusText.setText("正在通过WebView实时解析并下载...");
                 });
 
-                // 下载视频
-                File videoFile = VideoDownloader.downloadVideo(MainActivity.this, videoUrl);
+                File videoFile = VideoParser.parseAndDownload(MainActivity.this, extractedUrl, selectedPlatform);
 
                 mainHandler.post(() -> {
                     progressBar.setVisibility(View.GONE);
@@ -419,7 +390,8 @@ public class MainActivity extends AppCompatActivity {
     protected void onDestroy() {
         super.onDestroy();
         executor.shutdown();
-        // 停止剪贴板监听服务
-        stopService(new Intent(this, ClipboardMonitorService.class));
+        if (clipboardManager != null) {
+            clipboardManager.removePrimaryClipChangedListener(clipboardChangedListener);
+        }
     }
 }

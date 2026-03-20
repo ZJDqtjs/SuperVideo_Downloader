@@ -4,41 +4,65 @@ import android.content.Context;
 import android.util.Log;
 
 import java.io.File;
-import java.io.IOException;
 
 public class VideoParser {
     private static final String TAG = "VideoParser";
 
     public static File parseAndDownload(Context context, String shareUrl, String platform) throws Exception {
-        Log.d(TAG, "开始解析并下载" + platform + "视频: " + shareUrl);
+        Exception webViewError = null;
+        String redirectUrl = resolveFallbackUrl(shareUrl);
 
         try {
-            // 1. 解析视频URL
-            String videoUrl = parseVideoUrl(context, shareUrl, platform);
-            Log.i(TAG, platform + "视频地址解析成功: " + videoUrl);
-
-            // 2. 下载视频文件
-            File videoFile = VideoDownloader.downloadVideo(context, videoUrl);
-            Log.i(TAG, platform + "视频下载完成: " + videoFile.getAbsolutePath());
-
-            return videoFile;
-
+            Log.d(TAG, "WebView parse start: " + platform + " url=" + shareUrl);
+            WebViewParser.MediaSource source = new WebViewParser(context, shareUrl).parseMediaSource();
+            return VideoDownloader.downloadMedia(context, source);
         } catch (Exception e) {
-            Log.e(TAG, platform + "视频处理失败: " + e.getMessage());
-            throw new Exception(platform + "视频处理失败: " + e.getMessage(), e);
+            webViewError = e;
+            Log.w(TAG, "WebView parse failed, fallback to direct mode: " + e.getMessage());
+        }
+
+        if (!redirectUrl.equals(shareUrl)) {
+            try {
+                Log.d(TAG, "WebView parse retry on resolved redirect url: " + redirectUrl);
+                WebViewParser.MediaSource retrySource = new WebViewParser(context, redirectUrl).parseMediaSource();
+                return VideoDownloader.downloadMedia(context, retrySource);
+            } catch (Exception retryError) {
+                if (webViewError != null) {
+                    Log.w(TAG, "Retry parse also failed: " + retryError.getMessage());
+                }
+                webViewError = retryError;
+            }
+        }
+
+        try {
+            WebViewParser.MediaSource fallbackSource = new WebViewParser.MediaSource(
+                    redirectUrl,
+                    redirectUrl.toLowerCase().contains(".m3u8"),
+                    shareUrl,
+                    null,
+                    null
+            );
+            return VideoDownloader.downloadMedia(context, fallbackSource);
+        } catch (Exception fallbackError) {
+            String msg = "Video parse/download failed";
+            if (webViewError != null) {
+                msg += " | WebView: " + webViewError.getMessage();
+            }
+            msg += " | Fallback: " + fallbackError.getMessage();
+            throw new Exception(msg, fallbackError);
         }
     }
 
     public static String parseVideoUrl(Context context, String shareUrl, String platform) throws Exception {
-        Log.d(TAG, "开始解析" + platform + "视频URL: " + shareUrl);
+        Log.d(TAG, "Parse media url: " + platform + " " + shareUrl);
+        return new WebViewParser(context, shareUrl).parseMediaSource().getUrl();
+    }
+
+    private static String resolveFallbackUrl(String shareUrl) {
         try {
-            WebViewParser parser = new WebViewParser(context, shareUrl);
-            String videoUrl = parser.parseVideoUrl();
-            Log.i(TAG, platform + "视频URL解析成功: " + videoUrl);
-            return videoUrl;
-        } catch (Exception e) {
-            Log.e(TAG, platform + "视频URL解析失败: " + e.getMessage());
-            throw new Exception(platform + "视频URL解析失败: " + e.getMessage(), e);
+            return HttpUtil.getRedirectUrl(shareUrl);
+        } catch (Exception ignored) {
+            return shareUrl;
         }
     }
 }
