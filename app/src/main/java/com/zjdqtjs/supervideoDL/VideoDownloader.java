@@ -19,6 +19,7 @@ import okhttp3.Response;
 
 public class VideoDownloader {
     private static final String TAG = "VideoDownloader";
+    private static final String TRACE = "SVD_TRACE";
     private static final String DOWNLOAD_SUBDIR = "DouyinDL";
     private static final String DEFAULT_USER_AGENT = "Mozilla/5.0 (Linux; Android 10; Pixel 4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36";
     private static final int MAX_SEGMENTS = 800;
@@ -35,10 +36,15 @@ public class VideoDownloader {
             throw new Exception("Invalid media source");
         }
 
+        Log.d(TAG, TRACE + " download.start url=" + source.getUrl() + " streamingHint=" + source.isStreaming() +
+                " referer=" + source.getReferer() + " cookie=" + (source.getCookie() != null && !source.getCookie().isEmpty()));
+
         if (source.isStreaming() || isM3u8(source.getUrl())) {
+            Log.d(TAG, TRACE + " download.route m3u8/stream");
             return downloadM3u8Stream(source);
         }
 
+        Log.d(TAG, TRACE + " download.route direct");
         return downloadDirect(source);
     }
 
@@ -49,6 +55,9 @@ public class VideoDownloader {
             if (!response.isSuccessful() || response.body() == null) {
                 throw new Exception("Download failed: HTTP " + response.code());
             }
+
+            Log.d(TAG, TRACE + " direct.response code=" + response.code() + " type=" + response.header("Content-Type") +
+                    " len=" + response.body().contentLength() + " finalUrl=" + response.request().url());
 
             ensureMediaResponse(response, source.getUrl());
 
@@ -64,10 +73,12 @@ public class VideoDownloader {
     private static File downloadM3u8Stream(WebViewParser.MediaSource source) throws Exception {
         String playlistUrl = source.getUrl();
         String m3u8Text = fetchText(playlistUrl, source);
+        Log.d(TAG, TRACE + " m3u8.fetch url=" + playlistUrl + " textLen=" + m3u8Text.length());
 
         if (m3u8Text.contains("#EXT-X-STREAM-INF")) {
             playlistUrl = resolveMasterPlaylist(playlistUrl, m3u8Text);
             m3u8Text = fetchText(playlistUrl, source);
+            Log.d(TAG, TRACE + " m3u8.master selected=" + playlistUrl + " textLen=" + m3u8Text.length());
         }
 
         if (m3u8Text.contains("#EXT-X-KEY")) {
@@ -78,6 +89,7 @@ public class VideoDownloader {
         if (segments.isEmpty()) {
             throw new Exception("No downloadable segment found in m3u8");
         }
+        Log.d(TAG, TRACE + " m3u8.segments count=" + segments.size());
 
         File outputFile = createOutputFile(".mp4");
         try (FileOutputStream outputStream = new FileOutputStream(outputFile)) {
@@ -91,6 +103,7 @@ public class VideoDownloader {
                 Request segmentRequest = buildRequest(segmentUrl, source);
                 try (Response response = client.newCall(segmentRequest).execute()) {
                     if (!response.isSuccessful() || response.body() == null) {
+                        Log.w(TAG, TRACE + " m3u8.segment.fail code=" + response.code() + " seg=" + segmentUrl);
                         throw new IOException("Segment request failed: " + response.code() + " " + segmentUrl);
                     }
 
@@ -116,6 +129,7 @@ public class VideoDownloader {
             if (!response.isSuccessful() || response.body() == null) {
                 throw new IOException("Request failed: HTTP " + response.code());
             }
+            Log.d(TAG, TRACE + " fetchText.ok code=" + response.code() + " type=" + response.header("Content-Type") + " url=" + response.request().url());
             return response.body().string();
         }
     }
@@ -204,7 +218,8 @@ public class VideoDownloader {
     }
 
     private static Request buildRequest(String url, WebViewParser.MediaSource source) {
-        Request.Builder builder = new Request.Builder().url(url);
+        String requestUrl = normalizeTransportUrl(url);
+        Request.Builder builder = new Request.Builder().url(requestUrl);
 
         String userAgent = source.getUserAgent();
         if (userAgent == null || userAgent.isEmpty()) {
@@ -215,7 +230,7 @@ public class VideoDownloader {
 
         String referer = source.getReferer();
         if (referer == null || referer.isEmpty()) {
-            referer = inferPlatformReferer(url);
+            referer = inferPlatformReferer(requestUrl);
         }
         if (referer != null && !referer.isEmpty()) {
             builder.header("Referer", referer);
@@ -230,7 +245,26 @@ public class VideoDownloader {
             builder.header("Cookie", source.getCookie());
         }
 
+        Log.d(TAG, TRACE + " request.build url=" + requestUrl + " referer=" + referer +
+                " hasCookie=" + (source.getCookie() != null && !source.getCookie().isEmpty()));
+
         return builder.build();
+    }
+
+    private static String normalizeTransportUrl(String url) {
+        if (url == null || url.isEmpty()) {
+            return url;
+        }
+
+        String lower = url.toLowerCase();
+        boolean isXhsMediaCdn = lower.contains("xhscdn.com") || lower.contains("sns-video");
+        if (isXhsMediaCdn && lower.startsWith("http://")) {
+            String upgraded = "https://" + url.substring("http://".length());
+            Log.d(TAG, TRACE + " request.upgradeHttps from=" + url + " to=" + upgraded);
+            return upgraded;
+        }
+
+        return url;
     }
 
     private static String inferPlatformReferer(String url) {
@@ -293,6 +327,7 @@ public class VideoDownloader {
                 lowerType.contains("html") ||
                 lowerType.contains("javascript") ||
                 lowerType.contains("xml")) {
+            Log.w(TAG, TRACE + " mediaCheck.fail contentType=" + contentType + " url=" + sourceUrl);
             throw new Exception("Parsed URL is not a video resource (Content-Type: " + contentType + ")");
         }
 
@@ -300,8 +335,11 @@ public class VideoDownloader {
         if (sniff.startsWith("{") || sniff.startsWith("[") || sniff.startsWith("<html") ||
                 sniff.startsWith("<!doctype") || sniff.startsWith("<?xml") ||
                 sniff.contains("\"errno\"") || sniff.contains("\"errmsg\"")) {
+            Log.w(TAG, TRACE + " mediaCheck.fail textPayload url=" + sourceUrl + " preview=" + sniff.substring(0, Math.min(120, sniff.length())));
             throw new Exception("Parsed URL returned text/json instead of media: " + sourceUrl);
         }
+
+        Log.d(TAG, TRACE + " mediaCheck.pass url=" + sourceUrl + " type=" + contentType);
     }
 
     private static File createOutputFile(String ext) throws IOException {

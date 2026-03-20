@@ -25,6 +25,7 @@ import android.view.View;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.ListView;
 import android.widget.ProgressBar;
 import android.widget.Spinner;
@@ -52,6 +53,7 @@ public class MainActivity extends AppCompatActivity {
     private Button pasteBtn;
     private Button downloadBtn;
     private ProgressBar progressBar;
+    private FrameLayout sniffWebViewContainer;
     private ListView historyList;
     private SwipeRefreshLayout swipeRefresh;
     private Spinner platformSpinner;
@@ -76,9 +78,13 @@ public class MainActivity extends AppCompatActivity {
         pasteBtn = findViewById(R.id.pasteBtn);
         downloadBtn = findViewById(R.id.downloadBtn);
         progressBar = findViewById(R.id.progressBar);
+        sniffWebViewContainer = findViewById(R.id.sniffWebViewContainer);
         historyList = findViewById(R.id.historyList);
         swipeRefresh = findViewById(R.id.swipeRefresh);
         platformSpinner = findViewById(R.id.platformSpinner);
+
+        // 提供可见WebView容器，便于用户手动点击播放触发真实视频流请求
+        WebViewParser.setPreviewContainer(sniffWebViewContainer);
 
         // 设置平台选择器
         platformAdapter = ArrayAdapter.createFromResource(this,
@@ -271,7 +277,7 @@ public class MainActivity extends AppCompatActivity {
 
         progressBar.setVisibility(View.VISIBLE);
         statusText.setVisibility(View.VISIBLE);
-        statusText.setText("正在解析视频地址...");
+        statusText.setText("正在解析视频地址... 如未自动播放，可在下方预览窗口手动点击播放");
         downloadBtn.setEnabled(false);
         pasteBtn.setEnabled(false);
 
@@ -393,5 +399,6 @@ public class MainActivity extends AppCompatActivity {
         if (clipboardManager != null) {
             clipboardManager.removePrimaryClipChangedListener(clipboardChangedListener);
         }
+        WebViewParser.setPreviewContainer(null);
     }
 }

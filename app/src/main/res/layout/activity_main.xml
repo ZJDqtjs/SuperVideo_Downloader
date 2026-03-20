@@ -92,6 +92,22 @@
             android:textColor="#FFFFFF"
             android:padding="12dp"
             android:layout_marginTop="8dp"/>
+
+        <TextView
+            android:id="@+id/sniffHint"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:text="资源嗅探预览（如未自动播放，可在下方手动点击播放）"
+            android:textSize="13sp"
+            android:textColor="#666666" />
+
+        <FrameLayout
+            android:id="@+id/sniffWebViewContainer"
+            android:layout_width="match_parent"
+            android:layout_height="220dp"
+            android:layout_marginTop="8dp"
+            android:background="#111111" />
     </LinearLayout>
 
     <TextView

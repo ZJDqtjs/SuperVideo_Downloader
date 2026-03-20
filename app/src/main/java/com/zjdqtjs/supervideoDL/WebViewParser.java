@@ -3,8 +3,10 @@ package com.zjdqtjs.supervideoDL;
 import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.util.Log;
 import android.view.MotionEvent;
+import android.view.ViewGroup;
 import android.webkit.CookieManager;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebChromeClient;
@@ -12,19 +14,24 @@ import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.widget.FrameLayout;
 
 import java.nio.charset.StandardCharsets;
+import java.net.URLDecoder;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.lang.ref.WeakReference;
 
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
@@ -33,8 +40,9 @@ import okhttp3.Response;
 public class WebViewParser {
 
     private static final String TAG = "WebViewParser";
+    private static final String TRACE = "SVD_TRACE";
     private static final String DEFAULT_USER_AGENT = "Mozilla/5.0 (Linux; Android 10; Pixel 4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36";
-    private static final int PARSE_TIMEOUT_SECONDS = 30;
+    private static final int PARSE_TIMEOUT_SECONDS = 45;
     private static final int ACCEPT_SCORE = 80;
     private static final int MIN_CANDIDATE_SCORE = 10;
     private static final int MAX_PROBE_CANDIDATES = 40;
@@ -42,6 +50,7 @@ public class WebViewParser {
     private static final int ACTIVE_SNIFF_MAX_TRIES = 10;
     private static final long ACTIVE_SNIFF_INTERVAL_MS = 900L;
     private static final OkHttpClient probeClient = new OkHttpClient();
+    private static volatile WeakReference<FrameLayout> previewContainerRef = new WeakReference<>(null);
     private static final Pattern MEDIA_URL_PATTERN = Pattern.compile(
             "https?://[^\\s\"']+(?:\\.(?:m3u8|mp4|m4s|ts)(?:\\?[^\\s\"']*)?|aweme/v1/(?:play|playwm)(?:\\?[^\\s\"']*)?|stream(?:/[^\\s\"']*)?(?:\\?[^\\s\"']*)?)",
             Pattern.CASE_INSENSITIVE
@@ -54,10 +63,16 @@ public class WebViewParser {
     private final AtomicReference<WebView> webViewRef = new AtomicReference<>();
     private final Map<String, Integer> candidateScoreMap = new ConcurrentHashMap<>();
     private volatile int activeSniffTryCount = 0;
+    private volatile boolean nativeCenterTapDone = false;
+    private volatile long lastUserTouchAtMs = 0L;
 
     private final String originalUrl;
     private volatile String lastPageUrl;
     private volatile int bestScore = Integer.MIN_VALUE;
+
+    public static void setPreviewContainer(FrameLayout container) {
+        previewContainerRef = new WeakReference<>(container);
+    }
 
     public WebViewParser(Context context, String shareUrl) {
         this.context = context;
@@ -70,9 +85,11 @@ public class WebViewParser {
     }
 
     public MediaSource parseMediaSource() throws Exception {
+        Log.d(TAG, TRACE + " parse.start url=" + originalUrl);
         mainHandler.post(this::createAndLoadWebView);
 
-        parseLatch.await(PARSE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        boolean finished = parseLatch.await(PARSE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        Log.d(TAG, TRACE + " parse.await finished=" + finished + " bestScore=" + bestScore + " candidates=" + candidateScoreMap.size());
         destroyWebView();
 
         MediaSource best = bestSourceRef.get();
@@ -95,6 +112,10 @@ public class WebViewParser {
         WebView webView = new WebView(context);
         webViewRef.set(webView);
         activeSniffTryCount = 0;
+        nativeCenterTapDone = false;
+        candidateScoreMap.clear();
+        bestScore = Integer.MIN_VALUE;
+        Log.d(TAG, TRACE + " webview.create ua=" + DEFAULT_USER_AGENT);
 
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);
@@ -102,6 +123,17 @@ public class WebViewParser {
         settings.setDatabaseEnabled(true);
         settings.setMediaPlaybackRequiresUserGesture(false);
         settings.setUserAgentString(DEFAULT_USER_AGENT);
+        settings.setLoadsImagesAutomatically(true);
+        settings.setUseWideViewPort(true);
+        settings.setLoadWithOverviewMode(true);
+
+        webView.setClickable(true);
+        webView.setFocusable(true);
+        webView.setFocusableInTouchMode(true);
+        webView.setOnTouchListener((v, event) -> {
+            lastUserTouchAtMs = SystemClock.uptimeMillis();
+            return false;
+        });
 
         CookieManager cookieManager = CookieManager.getInstance();
         cookieManager.setAcceptCookie(true);
@@ -110,7 +142,30 @@ public class WebViewParser {
         webView.setWebChromeClient(new WebChromeClient());
         webView.addJavascriptInterface(new JSBridge(), "AndroidParser");
         webView.setWebViewClient(new ParserWebViewClient());
+        attachToPreviewContainer(webView);
+        Log.d(TAG, TRACE + " webview.loadUrl " + originalUrl);
         webView.loadUrl(originalUrl);
+    }
+
+    private void attachToPreviewContainer(WebView webView) {
+        FrameLayout container = previewContainerRef.get();
+        if (container == null) {
+            Log.d(TAG, TRACE + " preview.attach skipped noContainer");
+            return;
+        }
+
+        ViewGroup parent = (ViewGroup) webView.getParent();
+        if (parent != null) {
+            parent.removeView(webView);
+        }
+
+        container.removeAllViews();
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+        );
+        container.addView(webView, lp);
+        Log.d(TAG, TRACE + " preview.attach ok");
     }
 
     private void destroyWebView() {
@@ -125,9 +180,18 @@ public class WebViewParser {
             } catch (Throwable ignored) {
             }
 
+            try {
+                ViewGroup parent = (ViewGroup) webView.getParent();
+                if (parent != null) {
+                    parent.removeView(webView);
+                }
+            } catch (Throwable ignored) {
+            }
+
             webView.setWebViewClient(null);
             webView.setWebChromeClient(null);
             webView.destroy();
+            Log.d(TAG, TRACE + " webview.destroy");
         });
     }
 
@@ -137,12 +201,16 @@ public class WebViewParser {
         }
 
         if (activeSniffTryCount >= ACTIVE_SNIFF_MAX_TRIES) {
+            Log.d(TAG, TRACE + " sniff.schedule stop reachedMax tries=" + activeSniffTryCount);
             return;
         }
 
         activeSniffTryCount++;
+        Log.d(TAG, TRACE + " sniff.schedule try=" + activeSniffTryCount + " page=" + lastPageUrl);
 
-        triggerCenterTap(view);
+        if (shouldRunAutoCenterTap()) {
+            triggerCenterTap(view);
+        }
         injectAutoPlayJs(view);
 
         mainHandler.postDelayed(() -> {
@@ -153,11 +221,20 @@ public class WebViewParser {
         }, ACTIVE_SNIFF_INTERVAL_MS);
     }
 
+    private boolean shouldRunAutoCenterTap() {
+        // Keep early auto-taps for autoplay trigger, but avoid fighting user gestures.
+        if (activeSniffTryCount > 2) {
+            return false;
+        }
+        return (SystemClock.uptimeMillis() - lastUserTouchAtMs) > 2500;
+    }
+
     private void triggerCenterTap(WebView view) {
         try {
             int width = view.getWidth();
             int height = view.getHeight();
             if (width <= 0 || height <= 0) {
+                Log.d(TAG, TRACE + " sniff.tap skip invalidSize w=" + width + " h=" + height);
                 return;
             }
 
@@ -168,14 +245,41 @@ public class WebViewParser {
             MotionEvent down = MotionEvent.obtain(downTime, downTime, MotionEvent.ACTION_DOWN, x, y, 0);
             MotionEvent up = MotionEvent.obtain(downTime, downTime + 40, MotionEvent.ACTION_UP, x, y, 0);
 
-            view.dispatchTouchEvent(down);
-            view.dispatchTouchEvent(up);
+            boolean downHandled = view.dispatchTouchEvent(down);
+            boolean upHandled = view.dispatchTouchEvent(up);
+            if (!downHandled || !upHandled) {
+                view.onTouchEvent(down);
+                view.onTouchEvent(up);
+            }
+            Log.d(TAG, TRACE + " sniff.tap center x=" + x + " y=" + y + " downHandled=" + downHandled + " upHandled=" + upHandled);
 
             down.recycle();
             up.recycle();
         } catch (Exception e) {
             Log.d(TAG, "Center tap simulation failed: " + e.getMessage());
         }
+    }
+
+    private void triggerNativeCenterTapOnce(WebView view) {
+        if (view == null || nativeCenterTapDone) {
+            return;
+        }
+
+        view.postDelayed(() -> {
+            WebView current = webViewRef.get();
+            if (current != view || nativeCenterTapDone) {
+                return;
+            }
+
+            if (view.getWidth() <= 0 || view.getHeight() <= 0) {
+                Log.d(TAG, TRACE + " nativeTap.defer sizeNotReady w=" + view.getWidth() + " h=" + view.getHeight());
+                return;
+            }
+
+            nativeCenterTapDone = true;
+            Log.d(TAG, TRACE + " nativeTap.once start");
+            triggerCenterTap(view);
+        }, 280);
     }
 
     private void injectAutoPlayJs(WebView view) {
@@ -209,7 +313,7 @@ public class WebViewParser {
                 + "}catch(e){return 'err:'+e.message;}"
                 + "})();";
 
-        view.evaluateJavascript(js, null);
+        view.evaluateJavascript(js, result -> Log.d(TAG, TRACE + " sniff.autoplay jsResult=" + result));
     }
 
     private void addCandidate(String rawUrl, Map<String, String> requestHeaders) {
@@ -224,15 +328,20 @@ public class WebViewParser {
 
         int score = scoreUrl(url, requestHeaders);
         if (score < MIN_CANDIDATE_SCORE) {
+            if (isKnownMediaEndpoint(url.toLowerCase()) || url.toLowerCase().contains("douyin") || url.toLowerCase().contains("xhscdn")) {
+                Log.d(TAG, TRACE + " candidate.reject lowScore=" + score + " url=" + url);
+            }
             return;
         }
 
         Integer knownScore = candidateScoreMap.putIfAbsent(url, score);
         if (knownScore != null && knownScore >= score) {
+            Log.d(TAG, TRACE + " candidate.skip weaker knownScore=" + knownScore + " score=" + score + " url=" + url);
             return;
         }
 
         if (score <= bestScore) {
+            Log.d(TAG, TRACE + " candidate.skip lowerThanBest score=" + score + " best=" + bestScore + " url=" + url);
             return;
         }
 
@@ -242,11 +351,43 @@ public class WebViewParser {
 
         MediaSource source = new MediaSource(url, isStreamUrl(url), referer, DEFAULT_USER_AGENT, cookies);
         bestSourceRef.set(source);
-        Log.d(TAG, "Candidate media: " + url + " score=" + score);
+        Log.d(TAG, TRACE + " candidate.best score=" + score + " stream=" + source.isStreaming() + " url=" + url);
 
-        if (score >= ACCEPT_SCORE) {
+        if (score >= ACCEPT_SCORE && canAutoAcceptCandidate(url, requestHeaders)) {
+            Log.d(TAG, TRACE + " candidate.acceptFast score=" + score + " url=" + url);
             parseLatch.countDown();
+        } else if (score >= ACCEPT_SCORE) {
+            Log.d(TAG, TRACE + " candidate.hold score=" + score + " url=" + url);
         }
+    }
+
+    private boolean canAutoAcceptCandidate(String url, Map<String, String> requestHeaders) {
+        String lower = url.toLowerCase();
+
+        // Keep parser open for dynamic endpoints such as Douyin play/playwm and XHS stream,
+        // so users can manually press play and expose final CDN media URLs.
+        if (isKnownMediaEndpoint(lower)) {
+            return false;
+        }
+
+        if (lower.contains(".mp4") || lower.contains(".m3u8") || lower.contains(".m4s") || lower.contains(".ts")) {
+            return true;
+        }
+
+        if (requestHeaders != null) {
+            String accept = requestHeaders.get("Accept");
+            if (accept == null) {
+                accept = requestHeaders.get("accept");
+            }
+            if (accept != null) {
+                String lowerAccept = accept.toLowerCase();
+                if (lowerAccept.contains("video/") || lowerAccept.contains("application/vnd.apple.mpegurl")) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     private int scoreUrl(String url, Map<String, String> requestHeaders) {
@@ -263,6 +404,7 @@ public class WebViewParser {
         if (lower.contains("video=")) score += 10;
         if (lower.contains("play") || lower.contains("stream")) score += 25;
         if (lower.contains("bilivideo") || lower.contains("kwaicdn") || lower.contains("douyinvod")) score += 40;
+        if (lower.contains("xhscdn") || lower.contains("sns-video")) score += 65;
         if (lower.contains("aweme") || lower.contains("watermark") || lower.contains("download_addr")) score += 20;
 
         if (isKnownMediaEndpoint(lower)) {
@@ -364,16 +506,62 @@ public class WebViewParser {
         return out.replace("\\u0026", "&");
     }
 
+    private boolean isHttpLike(String url) {
+        if (url == null) {
+            return false;
+        }
+        String lower = url.toLowerCase();
+        return lower.startsWith("http://") || lower.startsWith("https://");
+    }
+
+    private void collectCandidatesFromAnyText(String rawText) {
+        if (rawText == null || rawText.isEmpty()) {
+            return;
+        }
+
+        Set<String> samples = new LinkedHashSet<>();
+        samples.add(rawText);
+
+        String decoded = rawText;
+        for (int i = 0; i < 2; i++) {
+            try {
+                decoded = URLDecoder.decode(decoded, "UTF-8");
+            } catch (Exception ignored) {
+                break;
+            }
+            samples.add(decoded);
+            if (decoded.equals(rawText)) {
+                break;
+            }
+        }
+
+        for (String sample : samples) {
+            Matcher matcher = MEDIA_URL_PATTERN.matcher(sample);
+            while (matcher.find()) {
+                addCandidate(matcher.group(), null);
+            }
+        }
+    }
+
+    private void handleNonHttpNavigation(String url) {
+        collectCandidatesFromAnyText(url);
+
+        String lower = url.toLowerCase();
+        if (lower.startsWith("xhsdiscover://") || lower.startsWith("xhs://") ||
+                lower.startsWith("snssdk") || lower.startsWith("intent://")) {
+            Log.d(TAG, TRACE + " deeplink.blocked " + url);
+            return;
+        }
+
+        Log.d(TAG, TRACE + " customScheme.blocked " + url);
+    }
+
     private void parseMediaCandidatesFromJson(String resultJson) {
         if (resultJson == null) {
             return;
         }
 
-        String decoded = resultJson.replace("\\\"", "\"");
-        Matcher matcher = MEDIA_URL_PATTERN.matcher(decoded);
-        while (matcher.find()) {
-            addCandidate(matcher.group(), null);
-        }
+        collectCandidatesFromAnyText(resultJson.replace("\\\"", "\""));
     }
 
     private MediaSource probeCandidatesByBinary() {
@@ -390,8 +578,10 @@ public class WebViewParser {
         for (int i = 0; i < limit; i++) {
             String candidateUrl = entries.get(i).getKey();
             try {
+                Log.d(TAG, TRACE + " probe.try rank=" + (i + 1) + " score=" + entries.get(i).getValue() + " url=" + candidateUrl);
                 MediaSource source = probeSingleCandidate(candidateUrl);
                 if (source != null) {
+                    Log.d(TAG, TRACE + " probe.hit url=" + source.getUrl());
                     return source;
                 }
             } catch (Exception e) {
@@ -421,14 +611,18 @@ public class WebViewParser {
 
         try (Response response = probeClient.newCall(builder.build()).execute()) {
             if (!response.isSuccessful()) {
+                Log.d(TAG, TRACE + " probe.httpFail code=" + response.code() + " url=" + candidateUrl);
                 return null;
             }
 
             String finalUrl = response.request().url().toString();
             String contentType = response.header("Content-Type");
+            long contentLength = response.body() != null ? response.body().contentLength() : -1;
             byte[] sample = response.peekBody(PROBE_BYTES).bytes();
+            Log.d(TAG, TRACE + " probe.httpOk code=" + response.code() + " type=" + contentType + " len=" + contentLength + " finalUrl=" + finalUrl);
 
             if (!isLikelyMediaResponse(finalUrl, contentType, sample)) {
+                Log.d(TAG, TRACE + " probe.notMedia finalUrl=" + finalUrl);
                 return null;
             }
 
@@ -444,6 +638,7 @@ public class WebViewParser {
         String lowerUrl = finalUrl == null ? "" : finalUrl.toLowerCase();
 
         if (looksLikeTextPayload(sample)) {
+            Log.d(TAG, TRACE + " probe.judge textPayload type=" + lowerType + " url=" + lowerUrl);
             return false;
         }
 
@@ -530,7 +725,44 @@ public class WebViewParser {
 
     private class ParserWebViewClient extends WebViewClient {
         @Override
+        public boolean shouldOverrideUrlLoading(WebView view, String url) {
+            if (url == null || url.isEmpty()) {
+                return false;
+            }
+
+            if (!isHttpLike(url)) {
+                handleNonHttpNavigation(url);
+                return true;
+            }
+
+            return false;
+        }
+
+        @Override
+        public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+            if (request == null || request.getUrl() == null) {
+                return false;
+            }
+
+            String reqUrl = request.getUrl().toString();
+            if (!isHttpLike(reqUrl)) {
+                handleNonHttpNavigation(reqUrl);
+                return true;
+            }
+
+            return false;
+        }
+
+        @Override
         public android.webkit.WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+            String reqUrl = request.getUrl().toString();
+            if (!isHttpLike(reqUrl)) {
+                handleNonHttpNavigation(reqUrl);
+                return super.shouldInterceptRequest(view, request);
+            }
+            if (reqUrl.contains("aweme/v1/play") || reqUrl.contains("xhscdn.com/stream") || reqUrl.contains("video")) {
+                Log.d(TAG, TRACE + " intercept " + reqUrl);
+            }
             addCandidate(request.getUrl().toString(), request.getRequestHeaders());
             return super.shouldInterceptRequest(view, request);
         }
@@ -538,7 +770,10 @@ public class WebViewParser {
         @Override
         public void onPageFinished(WebView view, String url) {
             super.onPageFinished(view, url);
-            lastPageUrl = url;
+            if (isHttpLike(url)) {
+                lastPageUrl = url;
+            }
+            Log.d(TAG, TRACE + " page.finished " + url);
             injectMediaDetectionJs(view);
             scheduleActiveSniffing(view);
         }
@@ -546,7 +781,11 @@ public class WebViewParser {
         @Override
         public void onPageCommitVisible(WebView view, String url) {
             super.onPageCommitVisible(view, url);
-            lastPageUrl = url;
+            if (isHttpLike(url)) {
+                lastPageUrl = url;
+            }
+            Log.d(TAG, TRACE + " page.visible " + url);
+            triggerNativeCenterTapOnce(view);
             scheduleActiveSniffing(view);
         }
 
@@ -577,13 +816,17 @@ public class WebViewParser {
                     + "}catch(e){return '[]';}"
                     + "})();";
 
-            view.evaluateJavascript(js, WebViewParser.this::parseMediaCandidatesFromJson);
+            view.evaluateJavascript(js, result -> {
+                Log.d(TAG, TRACE + " sniff.inject jsCollected=" + (result == null ? "null" : Integer.toString(result.length())));
+                WebViewParser.this.parseMediaCandidatesFromJson(result);
+            });
         }
     }
 
     private class JSBridge {
         @JavascriptInterface
         public void onVideoUrlFound(String url) {
+            Log.d(TAG, TRACE + " bridge.url " + url);
             addCandidate(url, null);
         }
     }
